@@ -14,10 +14,11 @@ use super::{
 };
 use crate::data_map::DataMap;
 use std::{
-    cell::RefCell,
+    // cell::Mutex,
+    sync::{Arc, Mutex},
     fmt::{self, Debug},
     mem,
-    rc::Rc,
+    // rc::Arc,
 };
 use unwrap::unwrap;
 
@@ -113,7 +114,7 @@ impl<S> Debug for State<S> {
 /// particularly for small data (below `MIN_CHUNK_SIZE * 3` bytes) where no chunks are generated.
 // #[async_trait]
 pub struct Encryptor<S> {
-    state: Rc<RefCell<State<S>>>,
+    state: Arc<Mutex<State<S>>>,
 }
 
 impl<S> Encryptor<S>
@@ -154,8 +155,8 @@ where
     /// modified by subsequent `write()` calls).  The internal buffers can only be flushed by
     /// calling `close()`.
     pub async fn write(&self, data: &[u8]) -> Result<(), SelfEncryptionError<S::Error>> {
-        let curr_state = Rc::clone(&self.state);
-        let prev_state = mem::replace(&mut *curr_state.borrow_mut(), State::Transitioning);
+        let curr_state = Arc::clone(&self.state);
+        let prev_state = mem::replace(&mut *curr_state.lock().unwrap(), State::Transitioning);
 
         let next_state = match prev_state {
             State::Small(small) => {
@@ -182,7 +183,7 @@ where
         let data = data.to_vec();
         let next_state = next_state.write(&data).await?;
 
-        *curr_state.borrow_mut() = next_state;
+        *curr_state.lock().unwrap() = next_state;
 
         Ok(())
     }
@@ -190,7 +191,7 @@ where
     /// This finalises the encryptor - it should not be used again after this call.  Internal
     /// buffers are flushed, resulting in up to four chunks being stored.
     pub async fn close(self) -> Result<(DataMap, S), SelfEncryptionError<S::Error>> {
-        let state = unwrap!(Rc::try_unwrap(self.state));
+        let state = unwrap!(Arc::try_unwrap(self.state));
         let state = state.into_inner();
         state.close().await
     }
@@ -200,19 +201,19 @@ where
     /// E.g. if this encryptor was constructed with a `DataMap` whose `len()` yields 100, and it
     /// then handles a `write()` of 100 bytes, `len()` will return 200.
     pub fn len(&self) -> u64 {
-        self.state.borrow().len()
+        self.state.len()
     }
 
     /// Returns true if `len() == 0`.
     pub fn is_empty(&self) -> bool {
-        self.state.borrow().is_empty()
+        self.state.is_empty()
     }
 }
 
 impl<S> From<State<S>> for Encryptor<S> {
     fn from(s: State<S>) -> Self {
         Encryptor {
-            state: Rc::new(RefCell::new(s)),
+            state: Arc::new(Mutex::new(s)),
         }
     }
 }

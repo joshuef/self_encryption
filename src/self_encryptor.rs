@@ -17,12 +17,14 @@ use crate::{
 };
 use brotli::{self, enc::BrotliEncoderParams};
 use std::{
-    cell::RefCell,
+    // cell::Mutex,
     cmp,
     fmt::{self, Debug, Formatter},
     io::Cursor,
     iter,
-    rc::Rc,
+    // rc::Arc,
+    sync::{Arc, Mutex},
+
 };
 use unwrap::unwrap;
 
@@ -62,7 +64,7 @@ impl Chunk {
 
 /// This is the encryption object and all file handling should be done using this object as the low
 /// level mechanism to read and write *content*.  This library has no knowledge of file metadata.
-pub struct SelfEncryptor<S>(Rc<RefCell<State<S>>>);
+pub struct SelfEncryptor<S>(Arc<Mutex<State<S>>>);
 
 impl<S> SelfEncryptor<S>
 where
@@ -110,7 +112,7 @@ where
             }
         }
 
-        Ok(SelfEncryptor(Rc::new(RefCell::new(State {
+        Ok(SelfEncryptor(Arc::new(Mutex::new(State {
             storage,
             sorted_map,
             chunks,
@@ -129,13 +131,13 @@ where
         data: &[u8],
         position: u64,
     ) -> Result<(), SelfEncryptionError<S::Error>> {
-        let state = Rc::clone(&self.0);
+        let state = Arc::clone(&self.0);
         let data = data.to_vec();
 
-        prepare_window_for_writing(Rc::clone(&self.0), position, data.len() as u64)
+        prepare_window_for_writing(Arc::clone(&self.0), position, data.len() as u64)
             .await
             .map(move |_| {
-                let mut state = state.borrow_mut();
+                let mut state = state.lock().unwrap();
                 for (p, byte) in state.sequencer.iter_mut().skip(position as usize).zip(data) {
                     *p = byte;
                 }
@@ -151,11 +153,13 @@ where
         position: u64,
         length: u64,
     ) -> Result<Vec<u8>, SelfEncryptionError<S::Error>> {
-        let state = Rc::clone(&self.0);
-        prepare_window_for_reading(Rc::clone(&self.0), position, length).await?;
+        let state = Arc::clone(&self.0);
+        prepare_window_for_reading(Arc::clone(&self.0), position, length).await?;
 
-        let state = state.borrow();
+        // let state = Arc::downgrade(&state);
         Ok(state
+            .lock()
+            .map_err(|_| SelfEncryptionError::Decryption("Error getting mutex lock during read".to_string()))?
             .sequencer
             .iter()
             .skip(position as usize)
@@ -170,7 +174,7 @@ where
     #[allow(clippy::needless_range_loop)]
     pub async fn close(self) -> Result<(DataMap, S), SelfEncryptionError<S::Error>> {
         let file_size = {
-            let state = self.0.borrow();
+            let state = self.0.lock().unwrap();
             state.file_size
         };
 
@@ -191,30 +195,30 @@ where
         // - first two chunks if last chunks size has changed
         // - chunks whose size is out of date
         let (resized_start, resized_end) = {
-            let state = self.0.borrow();
+            let state = self.0.lock().unwrap();
             resized_chunks(state.map_size, state.file_size)
         };
 
         // end of range of possibly reusable chunks
         let the_data_map = if resized_start == resized_end {
-            let mut state = self.0.borrow_mut();
+            let mut state = self.0.lock().unwrap();
             let end = get_num_chunks(state.map_size) as usize;
             state.create_data_map(end).await?
         } else {
             let byte_end = {
-                let mut state = self.0.borrow_mut();
+                let mut state = self.0.lock().unwrap();
                 state.chunks[0].flag_for_encryption();
                 state.chunks[1].flag_for_encryption();
                 get_start_end_positions(state.map_size, 1).1
             };
 
-            let state0 = Rc::clone(&self.0);
-            let state1 = Rc::clone(&self.0);
+            let state0 = Arc::clone(&self.0);
+            let state1 = Arc::clone(&self.0);
 
-            prepare_window_for_reading(Rc::clone(&self.0), 0, byte_end).await?;
+            prepare_window_for_reading(Arc::clone(&self.0), 0, byte_end).await?;
 
             let (byte_start, byte_end) = {
-                let state = state0.borrow();
+                let state = state0.lock().unwrap();
                 let byte_start = get_start_end_positions(state.map_size, resized_start).0;
                 let byte_end = state.map_size;
 
@@ -222,7 +226,7 @@ where
             };
 
             prepare_window_for_reading(state0, byte_start, byte_end - byte_start).await?;
-            let mut state = state1.borrow_mut();
+            let mut state = state1.lock().unwrap();
             state.create_data_map(resized_start as usize).await?
         };
         let data_map = the_data_map;
@@ -232,7 +236,7 @@ where
     /// Truncate the self_encryptor to the specified size (if extended, filled with `0u8`s).
     pub async fn truncate(&self, new_size: u64) -> Result<(), SelfEncryptionError<S::Error>> {
         {
-            let mut state = self.0.borrow_mut();
+            let mut state = self.0.lock().unwrap();
             if state.file_size == new_size {
                 return Ok(());
             }
@@ -245,32 +249,32 @@ where
         }
 
         let (chunks_start, chunks_end) = {
-            let state = self.0.borrow();
+            let state = self.0.lock().unwrap();
             overlapped_chunks(state.map_size, new_size, state.file_size - new_size)
         };
 
         let future = if chunks_start != chunks_end {
             // One chunk might need to be decrypted + the first two for re-encryption.
             let prepare = {
-                let state = self.0.borrow();
+                let state = self.0.lock().unwrap();
                 !state.chunks[chunks_start].in_sequencer
             };
 
             let future = if prepare {
                 let byte_start = {
-                    let state = self.0.borrow();
+                    let state = self.0.lock().unwrap();
                     get_start_end_positions(state.map_size, chunks_start as u32).0
                 };
 
                 if byte_start < new_size {
-                    let state = Rc::clone(&self.0);
+                    let state = Arc::clone(&self.0);
                     prepare_window_for_reading(state, byte_start, new_size - byte_start).await?
                 }
 
-                let state = Rc::clone(&self.0);
+                let state = Arc::clone(&self.0);
 
                 let byte_end = {
-                    let mut state = state.borrow_mut();
+                    let mut state = state.lock().unwrap();
                     state.chunks[0].flag_for_encryption();
                     state.chunks[1].flag_for_encryption();
                     get_start_end_positions(state.map_size, 1).1
@@ -281,9 +285,9 @@ where
                 Ok(())
             };
 
-            let state = Rc::clone(&self.0);
+            let state = Arc::clone(&self.0);
             future.map(move |_| {
-                let mut state = state.borrow_mut();
+                let mut state = state.lock().unwrap();
                 for chunk in &mut state.chunks[chunks_start..chunks_end] {
                     chunk.status = ChunkStatus::ToBeHashed;
                     chunk.in_sequencer = true;
@@ -293,9 +297,9 @@ where
             Ok(())
         };
 
-        let state = Rc::clone(&self.0);
+        let state = Arc::clone(&self.0);
         future.map(move |_| {
-            let mut state = state.borrow_mut();
+            let mut state = state.lock().unwrap();
             state.sequencer.truncate(new_size as usize);
             state.file_size = new_size;
         })
@@ -303,12 +307,12 @@ where
 
     /// Current file size as is known by encryptor.
     pub fn len(&self) -> u64 {
-        self.0.borrow().file_size
+        self.0.file_size
     }
 
     /// Returns true if file size as is known by encryptor == 0.
     pub fn is_empty(&self) -> bool {
-        self.0.borrow().file_size == 0
+        self.0.file_size == 0
     }
 
     /// Consume this encryptor and return its storage.
@@ -407,7 +411,7 @@ impl<S> Debug for State<S> {
 }
 
 async fn prepare_window_for_writing<S>(
-    state: Rc<RefCell<State<S>>>,
+    state: Arc<Mutex<State<S>>>,
     position: u64,
     length: u64,
 ) -> Result<(), SelfEncryptionError<S::Error>>
@@ -415,7 +419,7 @@ where
     S: Storage + 'static,
 {
     let (chunks_start, chunks_end, next_two) = {
-        let mut state = state.borrow_mut();
+        let mut state = state.lock().unwrap();
         state.file_size = cmp::max(state.file_size, position + length);
 
         let (chunks_start, chunks_end) = overlapped_chunks(state.map_size, position, length);
@@ -454,7 +458,7 @@ where
     // TODO If first/last chunk gets completely overwritten, no need to decrypt.
     let mut decrypted_chunks = Vec::new();
     {
-        let mut state = state.borrow_mut();
+        let mut state = state.lock().unwrap();
         for &i in [chunks_start, chunks_end - 1].iter().chain(&next_two) {
             if state.chunks[i].in_sequencer {
                 continue;
@@ -466,7 +470,7 @@ where
         }
     }
 
-    let mut state = state.borrow_mut();
+    let mut state = state.lock().unwrap();
     for (vec, pos) in decrypted_chunks {
         for (p, byte) in state.sequencer.iter_mut().skip(pos).zip(vec) {
             *p = byte;
@@ -486,7 +490,7 @@ where
 }
 
 async fn prepare_window_for_reading<S>(
-    state: Rc<RefCell<State<S>>>,
+    state: Arc<Mutex<State<S>>>,
     position: u64,
     length: u64,
 ) -> Result<(), SelfEncryptionError<S::Error>>
@@ -494,17 +498,18 @@ where
     S: Storage + 'static,
 {
     let (chunks_start, chunks_end) = {
-        let state = state.borrow();
+        // let state = Arc::downgrade(&state).clone();
+        let state = state.clone().lock().unwrap();
         overlapped_chunks(state.map_size, position, length)
     };
 
     if chunks_start == chunks_end {
-        let mut state = state.borrow_mut();
+        let mut state = state.lock().unwrap();
         return state.extend_sequencer_up_to(position + length);
     }
 
     {
-        let mut state = state.borrow_mut();
+        let mut state = state.lock().unwrap();
         let required_len = {
             let end = get_start_end_positions(state.map_size, chunks_end as u32 - 1).1;
             cmp::max(position + length, end)
@@ -513,7 +518,7 @@ where
         state.extend_sequencer_up_to(required_len)?;
     }
     let mut decrypted_chunks = Vec::new();
-    let mut state = state.borrow_mut();
+    let mut state = state.lock().unwrap();
     for i in chunks_start..chunks_end {
         if state.chunks[i].in_sequencer {
             continue;
@@ -748,13 +753,13 @@ fn get_chunk_number(file_size: u64, position: u64) -> u32 {
     get_num_chunks(file_size) - 1
 }
 
-fn take_state<S>(state: Rc<RefCell<State<S>>>) -> State<S> {
-    unwrap!(Rc::try_unwrap(state)).into_inner()
+fn take_state<S>(state: Arc<Mutex<State<S>>>) -> State<S> {
+    unwrap!(Arc::try_unwrap(state)).into_inner()
 }
 
 impl<S: Storage> Debug for SelfEncryptor<S> {
     fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
-        let state = self.0.borrow();
+        let state = self.0;
         writeln!(formatter, "SelfEncryptor {{\n    chunks:")?;
         for (i, chunk) in state.chunks.iter().enumerate() {
             writeln!(formatter, "        {:?}   {:?}", state.sorted_map[i], chunk)?
@@ -1023,7 +1028,7 @@ mod tests {
     }
 
     fn check_file_size<S: Storage>(se: &SelfEncryptor<S>, expected_file_size: u64) {
-        let state = se.0.borrow();
+        let state = se.0;
         assert_eq!(state.file_size, expected_file_size);
         if !state.sorted_map.is_empty() {
             let chunks_cumulated_size = state
@@ -1108,7 +1113,7 @@ mod tests {
             unwrap!(se.write(&the_bytes, 0).await);
 
             {
-                let state = se.0.borrow();
+                let state = se.0.lock().unwrap();
                 assert_eq!(state.sorted_map.len(), 0);
                 assert_eq!(state.sequencer.len(), bytes_len as usize);
             }

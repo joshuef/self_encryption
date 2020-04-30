@@ -30,7 +30,7 @@ enum State<S> {
 
 impl<S> State<S>
 where
-    S: Storage + 'static,
+    S: Storage + 'static + Send,
 {
     async fn write(self, data: &[u8]) -> Result<Self, SelfEncryptionError<S::Error>> {
         match self {
@@ -118,7 +118,7 @@ pub struct Encryptor<S> {
 
 impl<S> Encryptor<S>
 where
-    S: Storage + 'static,
+    S: Storage + 'static + Send,
 {
     /// Creates an `Encryptor`, using an existing `DataMap` if `data_map` is not `None`.
     // TODO - split into two separate c'tors rather than passing optional `DataMap`.

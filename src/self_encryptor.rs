@@ -68,7 +68,7 @@ pub struct SelfEncryptor<S>(Arc<Mutex<State<S>>>);
 
 impl<S> SelfEncryptor<S>
 where
-    S: Storage + Send + 'static,
+    S: Storage + Send + Sync + 'static,
 {
     /// This is the only constructor for an encryptor object.  Each `SelfEncryptor` is used for a
     /// single file.  The parameters are a `Storage` object and a `DataMap`.  For a file which has
@@ -330,7 +330,7 @@ struct State<S> {
 
 impl<S> State<S>
 where
-    S: Storage + 'static,
+    S: Storage + 'static + Send + Sync,
 {
     fn extend_sequencer_up_to(
         &mut self,
@@ -414,7 +414,7 @@ async fn prepare_window_for_writing<S>(
     length: u64,
 ) -> Result<(), SelfEncryptionError<S::Error>>
 where
-    S: Storage + 'static,
+    S: Storage + 'static + Send + Sync,
 {
     let (chunks_start, chunks_end, next_two) = {
         let mut state = state.lock().unwrap();
@@ -493,7 +493,7 @@ async fn prepare_window_for_reading<S>(
     length: u64,
 ) -> Result<(), SelfEncryptionError<S::Error>>
 where
-    S: Storage + 'static,
+    S: Storage + 'static + Send + Sync,
 {
     let (chunks_start, chunks_end) = {
         // let state = Arc::downgrade(&state).clone();
@@ -541,7 +541,7 @@ async fn decrypt_chunk<S>(
     chunk_number: u32,
 ) -> Result<Vec<u8>, SelfEncryptionError<S::Error>>
 where
-    S: Storage + 'static,
+    S: Storage + 'static + Send + Sync,
 {
     let name = &state.sorted_map[chunk_number as usize].hash;
     let (pad, key, iv) = get_pad_key_and_iv(chunk_number, &state.sorted_map, state.map_size);

@@ -156,10 +156,8 @@ where
         let state = Arc::clone(&self.0);
         prepare_window_for_reading(Arc::clone(&self.0), position, length).await?;
 
-        // let state = Arc::downgrade(&state);
+        let state = state.lock().unwrap();
         Ok(state
-            .lock()
-            .map_err(|_| SelfEncryptionError::Decryption("Error getting mutex lock during read".to_string()))?
             .sequencer
             .iter()
             .skip(position as usize)
@@ -307,12 +305,12 @@ where
 
     /// Current file size as is known by encryptor.
     pub fn len(&self) -> u64 {
-        self.0.file_size
+        self.0.lock().unwrap().file_size
     }
 
     /// Returns true if file size as is known by encryptor == 0.
     pub fn is_empty(&self) -> bool {
-        self.0.file_size == 0
+        self.0.lock().unwrap().file_size == 0
     }
 
     /// Consume this encryptor and return its storage.
@@ -499,7 +497,7 @@ where
 {
     let (chunks_start, chunks_end) = {
         // let state = Arc::downgrade(&state).clone();
-        let state = state.clone().lock().unwrap();
+        let state = state.lock().unwrap();
         overlapped_chunks(state.map_size, position, length)
     };
 
@@ -754,12 +752,15 @@ fn get_chunk_number(file_size: u64, position: u64) -> u32 {
 }
 
 fn take_state<S>(state: Arc<Mutex<State<S>>>) -> State<S> {
-    unwrap!(Arc::try_unwrap(state)).into_inner()
+    // unwrap!(Arc::try_unwrap(state)).into_inner())
+    // let state = 
+    unwrap!(Arc::try_unwrap(state).unwrap().into_inner())
+    // state.lock().unwrap()
 }
 
 impl<S: Storage> Debug for SelfEncryptor<S> {
     fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
-        let state = self.0;
+        let state = self.0.lock().unwrap();
         writeln!(formatter, "SelfEncryptor {{\n    chunks:")?;
         for (i, chunk) in state.chunks.iter().enumerate() {
             writeln!(formatter, "        {:?}   {:?}", state.sorted_map[i], chunk)?
@@ -1028,7 +1029,7 @@ mod tests {
     }
 
     fn check_file_size<S: Storage>(se: &SelfEncryptor<S>, expected_file_size: u64) {
-        let state = se.0;
+        let state = se.0.lock().unwrap();
         assert_eq!(state.file_size, expected_file_size);
         if !state.sorted_map.is_empty() {
             let chunks_cumulated_size = state

@@ -192,7 +192,7 @@ where
     /// buffers are flushed, resulting in up to four chunks being stored.
     pub async fn close(self) -> Result<(DataMap, S), SelfEncryptionError<S::Error>> {
         let state = unwrap!(Arc::try_unwrap(self.state));
-        let state = state.into_inner();
+        let state = state.into_inner().map_err(|_| SelfEncryptionError::Generic("Error closing encryptor due to poisoned mutex".to_string()))?;
         state.close().await
     }
 
@@ -201,12 +201,12 @@ where
     /// E.g. if this encryptor was constructed with a `DataMap` whose `len()` yields 100, and it
     /// then handles a `write()` of 100 bytes, `len()` will return 200.
     pub fn len(&self) -> u64 {
-        self.state.len()
+        self.state.lock().unwrap().len()
     }
 
     /// Returns true if `len() == 0`.
     pub fn is_empty(&self) -> bool {
-        self.state.is_empty()
+        self.state.lock().unwrap().is_empty()
     }
 }
 

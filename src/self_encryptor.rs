@@ -68,7 +68,7 @@ pub struct SelfEncryptor<S>(Arc<Mutex<State<S>>>);
 
 impl<S> SelfEncryptor<S>
 where
-    S: Storage + 'static,
+    S: Storage + Send + 'static,
 {
     /// This is the only constructor for an encryptor object.  Each `SelfEncryptor` is used for a
     /// single file.  The parameters are a `Storage` object and a `DataMap`.  For a file which has

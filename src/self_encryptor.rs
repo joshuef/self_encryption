@@ -134,8 +134,10 @@ where
         let state = Arc::clone(&self.0);
         let data = data.to_vec();
 
-        prepare_window_for_writing(Arc::clone(&self.0), position, data.len() as u64)
-            .await
+        let window_for_writing = futures::executor::block_on( 
+            prepare_window_for_writing(Arc::clone(&self.0), position, data.len() as u64) );
+            // .await
+            window_for_writing
             .map(move |_| {
                 let mut state = state.lock().unwrap();
                 for (p, byte) in state.sequencer.iter_mut().skip(position as usize).zip(data) {
@@ -154,7 +156,11 @@ where
         length: u64,
     ) -> Result<Vec<u8>, SelfEncryptionError<S::Error>> {
         let state = Arc::clone(&self.0);
-        prepare_window_for_reading(Arc::clone(&self.0), position, length).await?;
+
+
+        // TODO: remove this blocking behaviour
+        futures::executor::block_on(prepare_window_for_reading(Arc::clone(&self.0), position, length))?;
+        // .await?;
 
         let state = state.lock().unwrap();
         Ok(state
@@ -201,7 +207,10 @@ where
         let the_data_map = if resized_start == resized_end {
             let mut state = self.0.lock().unwrap();
             let end = get_num_chunks(state.map_size) as usize;
-            state.create_data_map(end).await?
+
+            // TODO: remove this blocking behaviour
+        futures::executor::block_on(
+            state.create_data_map(end))?
         } else {
             let byte_end = {
                 let mut state = self.0.lock().unwrap();
@@ -213,7 +222,9 @@ where
             let state0 = Arc::clone(&self.0);
             let state1 = Arc::clone(&self.0);
 
-            prepare_window_for_reading(Arc::clone(&self.0), 0, byte_end).await?;
+            // TODO: remove this blocking behaviour
+        futures::executor::block_on(
+            prepare_window_for_reading(Arc::clone(&self.0), 0, byte_end) )?;
 
             let (byte_start, byte_end) = {
                 let state = state0.lock().unwrap();
@@ -223,9 +234,14 @@ where
                 (byte_start, byte_end)
             };
 
-            prepare_window_for_reading(state0, byte_start, byte_end - byte_start).await?;
+            // TODO: remove this blocking behaviour
+        futures::executor::block_on(
+            prepare_window_for_reading(state0, byte_start, byte_end - byte_start))?;
             let mut state = state1.lock().unwrap();
-            state.create_data_map(resized_start as usize).await?
+
+             // TODO: remove this blocking behaviour
+            futures::executor::block_on(
+                state.create_data_map(resized_start as usize))?
         };
         let data_map = the_data_map;
         Ok((data_map, take_state(self.0).storage))

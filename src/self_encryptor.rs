@@ -64,7 +64,7 @@ impl Chunk {
 
 /// This is the encryption object and all file handling should be done using this object as the low
 /// level mechanism to read and write *content*.  This library has no knowledge of file metadata.
-pub struct SelfEncryptor<S>(Arc<Mutex<State<S>>>);
+pub struct SelfEncryptor<S: Storage + Send + Sync + 'static>(Arc<Mutex<State<S>>>);
 
 impl<S> SelfEncryptor<S>
 where
@@ -319,7 +319,7 @@ where
     }
 }
 
-struct State<S> {
+struct State<S: Storage + Send + Sync> {
     storage: S,
     sorted_map: Vec<ChunkDetails>, // the original data_map, sorted
     chunks: Vec<Chunk>,            // this is sorted as well
@@ -328,9 +328,9 @@ struct State<S> {
     file_size: u64,
 }
 
-impl<S> State<S>
-where
-    S: Storage + 'static + Send + Sync,
+impl<S: Storage + 'static + Send + Sync> State<S>
+// where
+//     S: Storage + 'static + Send + Sync,
 {
     fn extend_sequencer_up_to(
         &mut self,
@@ -402,7 +402,7 @@ where
     }
 }
 
-impl<S> Debug for State<S> {
+impl<S: Storage + Send + Sync> Debug for State<S> {
     fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
         write!(formatter, "SelfEncryptor internal state")
     }
@@ -414,7 +414,7 @@ async fn prepare_window_for_writing<S>(
     length: u64,
 ) -> Result<(), SelfEncryptionError<S::Error>>
 where
-    S: Storage + 'static + Send + Sync,
+    S: Storage + 'static + Send + Sync
 {
     let (chunks_start, chunks_end, next_two) = {
         let mut state = state.lock().unwrap();
@@ -487,13 +487,13 @@ where
     Ok(())
 }
 
-async fn prepare_window_for_reading<S>(
+async fn prepare_window_for_reading<S: Storage + 'static + Send + Sync >(
     state: Arc<Mutex<State<S>>>,
     position: u64,
     length: u64,
 ) -> Result<(), SelfEncryptionError<S::Error>>
-where
-    S: Storage + 'static + Send + Sync,
+// where
+//     S: Storage + 'static + Send + Sync,
 {
     let (chunks_start, chunks_end) = {
         // let state = Arc::downgrade(&state).clone();
@@ -751,14 +751,14 @@ fn get_chunk_number(file_size: u64, position: u64) -> u32 {
     get_num_chunks(file_size) - 1
 }
 
-fn take_state<S>(state: Arc<Mutex<State<S>>>) -> State<S> {
+fn take_state<S: Storage + Send + Sync >(state: Arc<Mutex<State<S>>>) -> State<S> {
     // unwrap!(Arc::try_unwrap(state)).into_inner())
     // let state = 
     unwrap!(Arc::try_unwrap(state).unwrap().into_inner())
     // state.lock().unwrap()
 }
 
-impl<S: Storage> Debug for SelfEncryptor<S> {
+impl<S: Storage + Send + Sync> Debug for SelfEncryptor<S> {
     fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
         let state = self.0.lock().unwrap();
         writeln!(formatter, "SelfEncryptor {{\n    chunks:")?;
@@ -1028,7 +1028,7 @@ mod tests {
         );
     }
 
-    fn check_file_size<S: Storage>(se: &SelfEncryptor<S>, expected_file_size: u64) {
+    fn check_file_size<S: Storage + Send + Sync>(se: &SelfEncryptor<S>, expected_file_size: u64) {
         let state = se.0.lock().unwrap();
         assert_eq!(state.file_size, expected_file_size);
         if !state.sorted_map.is_empty() {

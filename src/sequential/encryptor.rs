@@ -22,7 +22,7 @@ use std::{
 };
 use unwrap::unwrap;
 
-enum State<S> {
+enum State<S: Storage + Send + Sync> {
     Small(SmallEncryptor<S>),
     Medium(MediumEncryptor<S>),
     Large(LargeEncryptor<S>),
@@ -70,25 +70,34 @@ where
     }
 }
 
-impl<S> From<SmallEncryptor<S>> for State<S> {
+impl<S> From<SmallEncryptor<S>> for State<S> 
+where
+    S: Storage + 'static + Send + Sync,
+    {
     fn from(e: SmallEncryptor<S>) -> Self {
         State::Small(e)
     }
 }
 
-impl<S> From<MediumEncryptor<S>> for State<S> {
+impl<S> From<MediumEncryptor<S>> for State<S> 
+where
+    S: Storage + 'static + Send + Sync,{
     fn from(e: MediumEncryptor<S>) -> Self {
         State::Medium(e)
     }
 }
 
-impl<S> From<LargeEncryptor<S>> for State<S> {
+impl<S> From<LargeEncryptor<S>> for State<S> 
+where
+    S: Storage + 'static + Send + Sync,{
     fn from(e: LargeEncryptor<S>) -> Self {
         State::Large(e)
     }
 }
 
-impl<S> Debug for State<S> {
+impl<S> Debug for State<S> 
+where
+    S: Storage + 'static + Send + Sync,{
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         write!(formatter, "SequentialEncryptor internal state")
     }
@@ -113,7 +122,10 @@ impl<S> Debug for State<S> {
 /// Due to the reduced complexity, a side effect is that this encryptor outperforms `SelfEncryptor`,
 /// particularly for small data (below `MIN_CHUNK_SIZE * 3` bytes) where no chunks are generated.
 // #[async_trait]
-pub struct Encryptor<S> {
+pub struct Encryptor<S: Storage + 'static + Send + Sync> 
+// where
+//     S: Storage + 'static + Send + Sync
+    {
     state: Arc<Mutex<State<S>>>,
 }
 
@@ -210,7 +222,10 @@ where
     }
 }
 
-impl<S> From<State<S>> for Encryptor<S> {
+impl<S> From<State<S>> for Encryptor<S> 
+where
+    S: Storage + 'static + Send + Sync,
+    {
     fn from(s: State<S>) -> Self {
         Encryptor {
             state: Arc::new(Mutex::new(s)),
